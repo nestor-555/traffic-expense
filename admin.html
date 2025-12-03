@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>交通費管理後台</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 font-sans">
+
+<div id="adminApp" class="min-h-screen p-6">
+    <header class="mb-6 flex justify-between items-center bg-white p-4 rounded-lg shadow">
+        <div><h1 class="text-2xl font-bold text-gray-800">交通費管理後台</h1><p class="text-gray-500 text-sm">彙整業務申報資料</p></div>
+        <div v-if="!db" class="bg-red-100 text-red-700 px-4 py-2 rounded">⚠️ Firebase 金鑰未設定</div>
+    </header>
+
+    <div class="bg-white p-4 rounded-lg shadow mb-6 flex gap-4 items-center">
+        <label class="font-bold text-gray-700">選擇結算起始月：</label>
+        <input type="month" v-model="filterMonth" class="border p-2 rounded">
+        <button @click="fetchData" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 font-bold"><i class="fa-solid fa-search mr-2"></i> 讀取資料</button>
+        <button @click="exportAll" v-if="reports.length > 0" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 font-bold ml-auto"><i class="fa-solid fa-file-csv mr-2"></i> 匯出總表</button>
+    </div>
+
+    <div v-if="loading" class="text-center py-10 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-3xl mb-2"></i><br>讀取中...</div>
+    <div v-else-if="reports.length === 0" class="text-center py-10 text-gray-400 bg-white rounded-lg border-dashed border-2 border-gray-300">尚無資料，請選擇月份並按讀取</div>
+
+    <div v-else class="grid gap-4">
+        <div v-for="report in reports" :key="report.id" class="bg-white rounded-lg shadow overflow-hidden">
+            <div class="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50" @click="report.expanded = !report.expanded">
+                <div class="flex items-center gap-4">
+                    <div class="bg-blue-100 text-blue-800 font-bold rounded-full w-10 h-10 flex items-center justify-center">{{ report.userName.charAt(0) }}</div>
+                    <div><h3 class="font-bold text-lg">{{ report.userName }}</h3><p class="text-xs text-gray-500">更新於: {{ new Date(report.updatedAt.seconds * 1000).toLocaleString() }}</p></div>
+                </div>
+                <div class="flex items-center gap-6">
+                    <div class="text-right"><p class="text-xs text-gray-500">申請總額</p><p class="font-bold text-xl text-blue-600">${{ report.totalAmount.toLocaleString() }}</p></div>
+                    <div class="text-gray-400"><i :class="['fa-solid', report.expanded ? 'fa-chevron-up' : 'fa-chevron-down']"></i></div>
+                </div>
+            </div>
+            <div v-if="report.expanded" class="p-4 border-t bg-gray-50 overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-gray-200 text-gray-600">
+                        <tr><th class="p-2">日期</th><th class="p-2">行程</th><th class="p-2 text-right">金額</th><th class="p-2 text-right">公升數</th><th class="p-2">備註</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="day in report.details" :key="day.date" class="border-b">
+                            <td class="p-2 font-mono">{{ day.date }}</td>
+                            <td class="p-2">{{ day.route }}</td>
+                            <td class="p-2 text-right">${{ (Number(day.fuelCost||0)+Number(day.parkingTotal||0)+Number(day.etcCost||0)+Number(day.otherCost||0)).toLocaleString() }}</td>
+                            <td class="p-2 text-right">{{ day.fuelLiters || '-' }}</td>
+                            <td class="p-2 text-gray-500">{{ day.note }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 簡易密碼保護 (防止閒雜人等進入後台) ---
+    const pwd = prompt("請輸入後台密碼 (預設1234):");
+    if(pwd !== "1234") { window.location.href="about:blank"; }
+
+    // ==========================================================
+    // 【重要】請將剛剛複製的 Firebase Config 貼在下方的大括號內
+    // ==========================================================
+    const firebaseConfig = {
+        apiKey: "請貼上您的_API_KEY",
+        authDomain: "xxx.firebaseapp.com",
+        projectId: "xxx",
+        storageBucket: "xxx.appspot.com",
+        messagingSenderId: "xxx",
+        appId: "xxx"
+    };
+
+    let db = null;
+    try {
+        if (!firebaseConfig.apiKey.includes("請貼上")) {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+        }
+    } catch (e) { console.error(e); }
+
+    const { createApp, ref } = Vue;
+
+    createApp({
+        setup() {
+            const filterMonth = ref('');
+            const reports = ref([]);
+            const loading = ref(false);
+
+            // 預設選上個月的週期
+            const today = new Date();
+            if (today.getDate() <= 20) today.setMonth(today.getMonth() - 1);
+            else today.setMonth(today.getMonth()); // 如果是21號後，預設本月
+            filterMonth.value = `${today.getFullYear()}-${String(today.getMonth()).padStart(2,'0')}`; // Bug fix: JS Month 0-11, so if user wants last month context logic is tricky, simple logic:
+            // 修正預設月份邏輯：直接抓上個月當預設值比較安全
+            const d = new Date(); d.setMonth(d.getMonth()-1);
+            filterMonth.value = d.toISOString().slice(0,7);
+
+            const fetchData = async () => {
+                if(!db) return alert("Firebase 未設定");
+                if(!filterMonth.value) return alert("請選擇月份");
+                loading.value = true; reports.value = [];
+                try {
+                    const snapshot = await db.collection('expenses').where('month', '==', filterMonth.value).get();
+                    snapshot.forEach(doc => reports.value.push({ id: doc.id, ...doc.data(), expanded: false }));
+                } catch (e) { console.error(e); alert("讀取失敗"); } finally { loading.value = false; }
+            };
+
+            const exportAll = () => {
+                let allRows = [];
+                reports.value.forEach(r => {
+                    r.details.forEach(d => {
+                        const total = Number(d.fuelCost||0) + Number(d.parkingTotal||0) + Number(d.etcCost||0) + Number(d.otherCost||0);
+                        if(total > 0 || d.route) {
+                            allRows.push({
+                                '業務姓名': r.userName, '結算月': r.month, '油品': r.fuelType,
+                                '日期': d.date, '行程': d.route, '上下班KM': d.commuteKm, '公務KM': d.businessKm,
+                                '燃料費': d.fuelCost, '公升數': d.fuelLiters, '停車費': d.parkingTotal,
+                                'ETC': d.etcCost, '其他費用': d.otherCost, '總金額': total, '備註': d.note
+                            });
+                        }
+                    });
+                });
+                const ws = XLSX.utils.json_to_sheet(allRows);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "總彙整表");
+                XLSX.writeFile(wb, `${filterMonth.value}_交通費總表.xlsx`);
+            };
+
+            return { db, filterMonth, reports, loading, fetchData, exportAll };
+        }
+    }).mount('#adminApp');
+</script>
+</body>
+</html>

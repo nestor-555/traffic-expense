@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>業務交通費日報表 (雲端版)</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        body { font-family: 'Microsoft JhengHei', sans-serif; background-color: #f1f5f9; }
+        .day-table th { background-color: #e2e8f0; color: #475569; font-size: 0.75rem; font-weight: 700; padding: 0.75rem 0.5rem; text-align: center; border: 1px solid #cbd5e1; white-space: nowrap; }
+        .day-table td { padding: 0; border: 1px solid #e2e8f0; background: white; vertical-align: middle; }
+        .day-table input { width: 100%; height: 100%; padding: 0.5rem; border: none; outline: none; background: transparent; font-size: 0.9rem; text-align: center; }
+        .day-table input:focus { background-color: #eff6ff; box-shadow: inset 0 0 0 2px #3b82f6; }
+        .input-num { font-family: 'Courier New', monospace; font-weight: 600; color: #1e293b; }
+        .input-parking { background-color: #f8fafc; font-size: 0.8rem; }
+        .input-liters { background-color: #fff1f2; color: #be123c; font-weight: bold; }
+        .total-cell { background-color: #f1f5f9; font-weight: bold; color: #0f172a; }
+        .btn-action { transition: all 0.2s; }
+        .btn-action:active { transform: scale(0.95); }
+    </style>
+</head>
+<body>
+
+<div id="app" class="min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-slate-800 text-white px-6 py-3 shadow-lg flex justify-between items-center sticky top-0 z-50 h-16">
+        <div class="flex items-center gap-3">
+            <div class="bg-blue-600 w-8 h-8 rounded flex items-center justify-center font-bold">D</div>
+            <div><h1 class="font-bold tracking-wide">交通費日報表 <span class="text-xs bg-gray-700 px-2 rounded text-blue-300">雲端版</span></h1></div>
+        </div>
+        <div class="hidden md:flex gap-6 text-sm">
+            <div class="flex flex-col items-end"><span class="text-gray-400 text-xs uppercase">本期總金額</span><span class="font-bold text-xl text-yellow-400">$ {{ formatNumber(totalAmount) }}</span></div>
+        </div>
+        <div class="flex gap-2">
+            <button @click="uploadToCloud" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded font-bold shadow flex items-center gap-2 btn-action border border-blue-400"><i class="fa-solid fa-cloud-arrow-up"></i> 送出申請</button>
+            <button @click="exportExcel" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1.5 rounded font-bold shadow flex items-center gap-2 btn-action"><i class="fa-solid fa-file-excel"></i> 備份Excel</button>
+        </div>
+    </header>
+
+    <main class="flex-grow p-4 flex flex-col gap-4 overflow-hidden">
+        <!-- 工具列 -->
+        <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200 flex flex-wrap gap-4 items-center justify-between">
+            <div class="flex items-center gap-3 flex-wrap">
+                <div class="flex items-center gap-2 bg-yellow-50 px-3 py-1.5 rounded border border-yellow-200 ring-2 ring-yellow-100">
+                    <label class="text-xs font-bold text-yellow-700"><i class="fa-solid fa-user mr-1"></i>業務姓名</label>
+                    <input type="text" v-model="config.userName" class="bg-transparent text-sm font-bold w-24 outline-none text-gray-700" placeholder="請輸入姓名">
+                </div>
+                <div class="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    <label class="text-xs font-bold text-gray-500">結算起始月</label>
+                    <input type="month" v-model="config.month" class="bg-transparent text-sm font-bold outline-none cursor-pointer">
+                </div>
+                <div class="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    <label class="text-xs font-bold text-gray-500">預設行程</label>
+                    <input type="text" v-model="config.defaultRoute" class="bg-transparent text-sm w-32 outline-none" placeholder="家-公司-家">
+                </div>
+                <div class="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    <label class="text-xs font-bold text-gray-500">上下班KM</label>
+                    <input type="number" v-model.number="config.defaultCommuteKm" class="bg-transparent text-sm w-12 outline-none text-center font-mono text-blue-600 font-bold" placeholder="20">
+                </div>
+                <div class="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded border border-gray-200">
+                    <label class="text-xs font-bold text-gray-500"><i class="fa-solid fa-gas-pump text-red-500 mr-1"></i>油品</label>
+                    <select v-model="config.fuelType" class="bg-transparent text-sm font-bold outline-none cursor-pointer text-gray-700">
+                        <option value="95無鉛">95無鉛</option><option value="92無鉛">92無鉛</option><option value="98無鉛">98無鉛</option><option value="柴油">柴油</option>
+                    </select>
+                </div>
+                <button @click="generateMonth" class="bg-gray-600 hover:bg-gray-700 text-white px-3 py-1.5 rounded text-sm font-bold btn-action shadow-sm"><i class="fa-solid fa-rotate mr-1"></i> 重置表格</button>
+            </div>
+            <div class="text-xs text-gray-500"><i class="fa-solid fa-circle-info mr-1"></i> 週期：該月21日 ～ 下月20日</div>
+        </div>
+
+        <!-- 表格 -->
+        <div class="flex-grow bg-white rounded-lg shadow border border-gray-300 overflow-auto relative">
+            <table class="w-full day-table border-collapse">
+                <thead class="sticky top-0 z-10 shadow-sm">
+                    <tr>
+                        <th class="w-12 bg-gray-100">刪除</th><th class="w-24">日期</th><th class="w-16">星期</th><th class="min-w-[150px]">行程說明</th>
+                        <th class="w-20">上下班<br>(km)</th><th class="w-20">公務<br>(km)</th>
+                        <th class="w-24 bg-red-50 text-red-800">油資($)</th><th class="w-20 bg-red-50 text-red-800">公升(L)</th>
+                        <th class="w-40 bg-blue-50 text-blue-800">停車費($)<br><span class="text-[10px] font-normal text-blue-600">(多筆用空白隔開)</span></th>
+                        <th class="w-20">ETC($)</th><th class="w-20">其他($)</th><th class="w-24 bg-gray-100">當日小計</th><th class="min-w-[100px]">備註</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-if="days.length === 0"><td colspan="13" class="text-center py-20 text-gray-400"><p>目前是空的，請先選擇月份並點擊「重置表格」</p></td></tr>
+                    <tr v-for="(day, index) in days" :key="index" :class="{'bg-yellow-50': isWeekend(day.date)}">
+                        <td class="text-center"><button @click="removeRow(index)" class="text-gray-300 hover:text-red-500 w-full h-full"><i class="fa-solid fa-times"></i></button></td>
+                        <td class="text-center bg-gray-50 text-xs font-mono">{{ day.date }}</td>
+                        <td class="text-center text-xs" :class="{'text-red-500 font-bold': isWeekend(day.date)}">{{ getDayOfWeek(day.date) }}</td>
+                        <td><input type="text" v-model="day.route" class="text-left px-2" placeholder="行程..."></td>
+                        <td><input type="number" v-model.number="day.commuteKm" class="input-num" placeholder="-"></td>
+                        <td><input type="number" v-model.number="day.businessKm" class="input-num" placeholder="-"></td>
+                        <td class="bg-red-50/30"><input type="number" v-model.number="day.fuelCost" class="input-num text-red-700" placeholder="-"></td>
+                        <td class="bg-red-50/50"><input type="number" v-model.number="day.fuelLiters" class="input-num input-liters" placeholder="L"></td>
+                        <td class="bg-blue-50/30 relative group"><input type="text" v-model="day.parkingInput" @blur="parseParkingInput(day)" class="input-parking text-blue-800" placeholder="例: 30 40"></td>
+                        <td><input type="number" v-model.number="day.etcCost" class="input-num" placeholder="-"></td>
+                        <td><input type="number" v-model.number="day.otherCost" class="input-num" placeholder="-"></td>
+                        <td class="total-cell text-center">${{ calculateDayTotal(day) }}</td>
+                        <td><input type="text" v-model="day.note" class="text-left px-2 text-gray-500 text-xs"></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="flex justify-between items-center bg-gray-50 p-2 rounded text-xs text-gray-500">
+            <div><button @click="addEmptyRow" class="text-blue-600 font-bold hover:underline">+ 新增一行</button></div>
+            <div>共 {{ days.length }} 天資料</div>
+        </div>
+    </main>
+</div>
+
+<script>
+    // ==========================================================
+    // 【重要】請將剛剛複製的 Firebase Config 貼在下方的大括號內
+    // ==========================================================
+    const firebaseConfig = {
+        // 請刪除這行註解，貼上您的 apiKey 等資訊...
+        apiKey: "請貼上您的_API_KEY",
+        authDomain: "xxx.firebaseapp.com",
+        projectId: "xxx",
+        storageBucket: "xxx.appspot.com",
+        messagingSenderId: "xxx",
+        appId: "xxx"
+    };
+
+    // 初始化 Firebase
+    let db = null;
+    try {
+        if (!firebaseConfig.apiKey.includes("請貼上")) {
+            firebase.initializeApp(firebaseConfig);
+            db = firebase.firestore();
+            console.log("Firebase initialized");
+        } else {
+            console.warn("Firebase config not set yet.");
+        }
+    } catch (e) { console.error("Firebase init error:", e); }
+
+    const { createApp, ref, computed, onMounted, watch } = Vue;
+
+    createApp({
+        setup() {
+            const days = ref([]);
+            const config = ref({ userName: '', month: '', defaultRoute: '家-公司-家', defaultCommuteKm: 20, fuelType: '95無鉛' });
+
+            onMounted(() => {
+                const saved = localStorage.getItem('dailyExpenses_v5');
+                if (saved) days.value = JSON.parse(saved);
+                const savedConfig = localStorage.getItem('dailyExpenses_config_v5');
+                if (savedConfig) {
+                    const parsed = JSON.parse(savedConfig);
+                    config.value = { ...config.value, ...parsed };
+                }
+                if (!config.value.month) initMonth();
+            });
+
+            watch(days, (v) => localStorage.setItem('dailyExpenses_v5', JSON.stringify(v)), { deep: true });
+            watch(config, (v) => localStorage.setItem('dailyExpenses_config_v5', JSON.stringify(v)), { deep: true });
+
+            const initMonth = () => {
+                const today = new Date();
+                let m = today.getMonth(), y = today.getFullYear();
+                if (today.getDate() <= 20) { m -= 1; if (m < 0) { m = 11; y -= 1; } }
+                config.value.month = `${y}-${String(m + 1).padStart(2, '0')}`;
+            };
+
+            const generateMonth = () => {
+                if (!config.value.month) return alert('請先點選「結算起始月」！');
+                if (days.value.length > 0 && !confirm(`確定要重新生成 ${config.value.month} 週期表格嗎？\n現有資料將被清空。`)) return;
+                
+                try {
+                    const [yStr, mStr] = config.value.month.split('-');
+                    const start = new Date(yStr, parseInt(mStr) - 1, 21);
+                    const end = new Date(yStr, parseInt(mStr), 20);
+                    const newDays = [];
+                    let curr = new Date(start);
+                    while (curr <= end) {
+                        const isWorkDay = curr.getDay() >= 1 && curr.getDay() <= 5;
+                        const dateStr = curr.toISOString().split('T')[0];
+                        newDays.push({
+                            date: dateStr,
+                            route: isWorkDay ? config.value.defaultRoute : '假日',
+                            commuteKm: isWorkDay ? config.value.defaultCommuteKm : '',
+                            businessKm: '', fuelCost: '', fuelLiters: '', parkingInput: '', parkingDetails: [], parkingTotal: 0, etcCost: '', otherCost: '', note: ''
+                        });
+                        curr.setDate(curr.getDate() + 1);
+                    }
+                    days.value = newDays;
+                } catch (e) { console.error(e); }
+            };
+
+            const parseParkingInput = (day) => {
+                if (!day.parkingInput) { day.parkingDetails = []; day.parkingTotal = 0; return; }
+                const nums = day.parkingInput.toString().replace(/　/g, ' ').split(' ').map(v => parseFloat(v)).filter(v => !isNaN(v) && v > 0);
+                day.parkingDetails = nums; day.parkingTotal = nums.reduce((a, b) => a + b, 0);
+            };
+
+            const calculateDayTotal = (d) => Number(d.fuelCost||0) + Number(d.parkingTotal||0) + Number(d.etcCost||0) + Number(d.otherCost||0);
+
+            const addEmptyRow = () => days.value.push({ date: new Date().toISOString().split('T')[0], route: '', commuteKm: '', businessKm: '', fuelCost: '', fuelLiters: '', parkingInput: '', parkingDetails: [], parkingTotal: 0, etcCost: '', otherCost: '', note: '' });
+            const removeRow = (i) => days.value.splice(i, 1);
+
+            const uploadToCloud = async () => {
+                if (!db) return alert("錯誤：尚未設定 Firebase 金鑰。\n請聯繫管理員更新 index.html。");
+                if (!config.value.userName) return alert("請先填寫「業務姓名」才能送出！");
+                if (days.value.length === 0) return alert("表格是空的，無法送出。");
+                
+                if (!confirm(`確定要送出 ${config.value.userName} 的 ${config.value.month} 報表嗎？`)) return;
+                
+                try {
+                    const docId = `${config.value.month}_${config.value.userName}`;
+                    await db.collection('expenses').doc(docId).set({
+                        userName: config.value.userName,
+                        month: config.value.month,
+                        fuelType: config.value.fuelType,
+                        defaultRoute: config.value.defaultRoute,
+                        defaultCommuteKm: config.value.defaultCommuteKm,
+                        totalAmount: totalAmount.value,
+                        updatedAt: new Date(),
+                        details: days.value
+                    });
+                    alert("✅ 申請已成功送出！\n管理者已可查看您的資料。");
+                } catch (e) { alert("上傳失敗：" + e.message); }
+            };
+
+            const exportExcel = () => {
+                const data = days.value.map(d => ({
+                    '日期': d.date, '星期': ['日','一','二','三','四','五','六'][new Date(d.date).getDay()],
+                    '行程': d.route, '上下班KM': d.commuteKm, '公務KM': d.businessKm,
+                    '燃料費': d.fuelCost, '公升數(L)': d.fuelLiters,
+                    '停車費': d.parkingTotal, 'ETC': d.etcCost, '其他費用': d.otherCost,
+                    '總金額': calculateDayTotal(d), '備註': d.note
+                }));
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), "交通費");
+                XLSX.writeFile(wb, `交通費_${config.value.userName}_${config.value.month}.xlsx`);
+            };
+
+            const isWeekend = (d) => { const day = new Date(d).getDay(); return day === 0 || day === 6; };
+            const getDayOfWeek = (d) => ['日','一','二','三','四','五','六'][new Date(d).getDay()];
+            const formatNumber = (n) => Number(n).toLocaleString('en-US');
+            const totalAmount = computed(() => days.value.reduce((acc, d) => acc + calculateDayTotal(d), 0));
+
+            return { days, config, generateMonth, parseParkingInput, calculateDayTotal, addEmptyRow, removeRow, uploadToCloud, exportExcel, isWeekend, getDayOfWeek, formatNumber, totalAmount };
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
